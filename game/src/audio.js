@@ -1,130 +1,138 @@
-// Synthesized sound only: every effect and the music loop are built from WebAudio
-// oscillators and filtered noise, so the game ships no audio files at all.
-import { MUTE_KEY } from './config.js';
+// Sound, all synthesised with the Web Audio API: no audio files, no network. Every
+// call is a no-op until the first user gesture creates the context, and M mutes it.
+let ctx = null;
+let master = null;
+let crackleGain = null;
+let crackleOn = false;
+let muted = false;
 
-const MUSIC_NOTES = [110, 130.81, 164.81, 196, 164.81, 130.81, 98, 123.47];
-const MUSIC_STEP = 0.22;
-
-export function createAudio() {
-  let context = null;
-  let master = null;
-  let muted = false;
-  let musicTimer = null;
-  let musicStep = 0;
+function ensure() {
+  if (ctx) return true;
   try {
-    muted = window.localStorage.getItem(MUTE_KEY) === '1';
-  } catch {
-    muted = false;
-  }
-
-  function ensure() {
-    if (context) return true;
-    try {
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContext) return false;
-      context = new AudioContext();
-      master = context.createGain();
-      master.gain.value = muted ? 0 : 0.5;
-      master.connect(context.destination);
-    } catch {
-      return false;
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return false;
+    ctx = new AudioContext();
+    master = ctx.createGain();
+    master.gain.value = muted ? 0 : 0.5;
+    master.connect(ctx.destination);
+    // The fire's crackle: looped noise through a band-pass, its gain following the fire.
+    const length = ctx.sampleRate;
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < length; i += 1) {
+      const white = Math.random() * 2 - 1;
+      last = (last + 0.02 * white) / 1.02;
+      data[i] = last * 3.5;
     }
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+    noise.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 900;
+    filter.Q.value = 0.6;
+    crackleGain = ctx.createGain();
+    crackleGain.gain.value = 0;
+    noise.connect(filter);
+    filter.connect(crackleGain);
+    crackleGain.connect(master);
+    noise.start();
+    crackleOn = true;
     return true;
+  } catch {
+    return false;
   }
+}
 
-  function tone(freq, dur, type, vol, slideTo) {
-    if (!context || muted) return;
-    const now = context.currentTime;
-    const osc = context.createOscillator();
-    const gain = context.createGain();
+function tone(freq, dur, type, volume, when = 0, slideTo = null) {
+  if (!ensure() || muted) return;
+  try {
+    const t0 = ctx.currentTime + when;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
     osc.type = type;
-    osc.frequency.setValueAtTime(freq, now);
-    if (slideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), now + dur);
-    gain.gain.setValueAtTime(vol, now);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.frequency.setValueAtTime(freq, t0);
+    if (slideTo !== null) osc.frequency.exponentialRampToValueAtTime(slideTo, t0 + dur);
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(volume, t0 + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
     osc.connect(gain);
     gain.connect(master);
-    osc.start(now);
-    osc.stop(now + dur + 0.02);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.05);
+  } catch {
+    // Sound never breaks the game.
   }
+}
 
-  function noise(dur, vol, filterFreq) {
-    if (!context || muted) return;
-    const now = context.currentTime;
-    const length = Math.max(1, Math.floor(context.sampleRate * dur));
-    const buffer = context.createBuffer(1, length, context.sampleRate);
+function noiseBurst(dur, volume, freq) {
+  if (!ensure() || muted) return;
+  try {
+    const t0 = ctx.currentTime;
+    const length = Math.floor(ctx.sampleRate * dur);
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / length);
-    const source = context.createBufferSource();
-    source.buffer = buffer;
-    const filter = context.createBiquadFilter();
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.value = filterFreq;
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(vol, now);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-    source.connect(filter);
+    filter.frequency.value = freq;
+    const gain = ctx.createGain();
+    gain.gain.value = volume;
+    src.connect(filter);
     filter.connect(gain);
     gain.connect(master);
-    source.start(now);
+    src.start(t0);
+  } catch {
+    // Sound never breaks the game.
   }
-
-  function startMusic() {
-    if (!context || musicTimer !== null) return;
-    musicTimer = window.setInterval(() => {
-      if (muted || !context) return;
-      const note = MUSIC_NOTES[musicStep % MUSIC_NOTES.length];
-      tone(note, MUSIC_STEP * 1.8, 'triangle', 0.07);
-      if (musicStep % 4 === 0) tone(note / 2, MUSIC_STEP * 3, 'sine', 0.09);
-      musicStep += 1;
-    }, MUSIC_STEP * 1000);
-  }
-
-  return {
-    get muted() {
-      return muted;
-    },
-    unlock() {
-      if (ensure() && context.state === 'suspended') context.resume().catch(() => {});
-      startMusic();
-    },
-    toggleMute() {
-      muted = !muted;
-      try {
-        window.localStorage.setItem(MUTE_KEY, muted ? '1' : '0');
-      } catch {
-        // Storage can be off: the mute then lasts this visit only.
-      }
-      if (master) master.gain.value = muted ? 0 : 0.5;
-      return muted;
-    },
-    shoot() {
-      tone(880, 0.09, 'square', 0.08, 220);
-    },
-    explosion() {
-      noise(0.28, 0.25, 900);
-      tone(120, 0.25, 'sine', 0.18, 40);
-    },
-    hit() {
-      tone(180, 0.08, 'sawtooth', 0.1, 90);
-    },
-    pickup() {
-      tone(660, 0.07, 'sine', 0.1, 990);
-    },
-    alarm() {
-      tone(440, 0.16, 'sawtooth', 0.14, 330);
-      tone(330, 0.16, 'sawtooth', 0.14, 440);
-    },
-    waveHorn() {
-      tone(196, 0.5, 'triangle', 0.14, 392);
-      tone(294, 0.5, 'triangle', 0.08, 294);
-    },
-    buy() {
-      tone(523, 0.1, 'sine', 0.12);
-      window.setTimeout(() => tone(784, 0.14, 'sine', 0.12), 90);
-    },
-    denied() {
-      tone(160, 0.14, 'square', 0.1, 110);
-    },
-  };
 }
+
+export function setMuted(value) {
+  muted = value;
+  if (master) master.gain.value = muted ? 0 : 0.5;
+}
+
+export function isMuted() {
+  return muted;
+}
+
+/** The crackle follows how much forest is burning: 0 is silent, 1 is a roar. */
+export function setCrackle(level) {
+  if (!crackleOn || !crackleGain) return;
+  try {
+    crackleGain.gain.setTargetAtTime(Math.min(0.12, level * 0.12), ctx.currentTime, 0.2);
+  } catch {
+    // Sound never breaks the game.
+  }
+}
+
+export const sfx = {
+  click() {
+    tone(660, 0.06, 'sine', 0.15);
+  },
+  dig() {
+    noiseBurst(0.09, 0.25, 500);
+    tone(120, 0.08, 'sine', 0.2, 0, 70);
+  },
+  splash() {
+    noiseBurst(0.25, 0.3, 1200);
+  },
+  horn() {
+    tone(220, 0.35, 'triangle', 0.25);
+    tone(330, 0.4, 'triangle', 0.2, 0.12);
+  },
+  upgrade() {
+    tone(523, 0.12, 'sine', 0.2);
+    tone(659, 0.12, 'sine', 0.2, 0.09);
+    tone(784, 0.2, 'sine', 0.2, 0.18);
+  },
+  win() {
+    [523, 659, 784, 1047].forEach((freq, i) => tone(freq, 0.25, 'triangle', 0.22, i * 0.13));
+  },
+  lose() {
+    [392, 330, 262, 196].forEach((freq, i) => tone(freq, 0.3, 'triangle', 0.2, i * 0.16));
+  },
+};

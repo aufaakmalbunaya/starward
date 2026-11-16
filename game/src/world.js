@@ -1,455 +1,308 @@
-// The simulation: ship, bullets, enemies spiralling onto the beacon, salvage,
-// particles and waves. Fixed 1/60 s steps, all randomness from one seeded
-// generator, so the same seed always plays the same game.
+// The simulation: the forest, the fire driven by the wind, the firefighter's tools,
+// the seven waves and the score. Fixed 1/60 s steps, all randomness from one seeded
+// generator, so the same seed always plays the same game. No drawing and no browser
+// in here: the renderer paints this state, and the tests step it in plain Node.
 import {
-  BEACON, BULLET, ENEMY_TYPES, FIELD, SALVAGE, SHIP, STEP, UPGRADES,
-  WIN_WAVE, waveComposition,
+  CALM_SECONDS,
+  CELL,
+  COLS,
+  GRID_Y,
+  PLAYER,
+  ROWS,
+  SCORE,
+  STATION_BURN_LIMIT,
+  UPGRADE_SECONDS,
+  WAVE_SECONDS,
+  WAVES,
 } from './config.js';
-import { pick, range } from './random.js';
+import { createForest, STATION_CELLS, TYPE_STATION, TYPE_TREE } from './forest.js';
+import { igniteEdge, rollWind, stepFire } from './fire.js';
+import { createPlayer, digStep, movePlayer, refillStep, splashAt } from './player.js';
+import { chooseUpgrades, defaultMods } from './upgrades.js';
+import { createParticles } from './particles.js';
 
 export const EVENT_NONE = 0;
-export const EVENT_KILL = 1;
-export const EVENT_BEACON_HIT = 2;
-export const EVENT_SHIP_HIT = 4;
-export const EVENT_WAVE_CLEAR = 8;
-export const EVENT_OVER = 16;
-export const EVENT_SALVAGE = 32;
-export const EVENT_WON = 64;
-
-const SHOP_SECONDS = 25;
-const SPAWN_MARGIN = 50;
-
-function upgradeCost(upgrade, level) {
-  return upgrade.base + upgrade.growth * level;
-}
-
-function spawnPoint(random) {
-  const side = Math.floor(random() * 4);
-  if (side === 0) return { x: range(random, 0, FIELD.width), y: -SPAWN_MARGIN };
-  if (side === 1) return { x: FIELD.width + SPAWN_MARGIN, y: range(random, 0, FIELD.height) };
-  if (side === 2) return { x: range(random, 0, FIELD.width), y: FIELD.height + SPAWN_MARGIN };
-  return { x: -SPAWN_MARGIN, y: range(random, 0, FIELD.height) };
-}
+export const EVENT_WAVE_CLEAR = 1;
+export const EVENT_OVER = 2;
+export const EVENT_WIN = 4;
+export const EVENT_UPGRADE = 8;
+export const EVENT_SPLASH = 16;
+export const EVENT_DIG = 32;
+export const EVENT_DENIED = 64;
 
 export function createWorld(random) {
   const state = {
     time: 0,
     phase: 'title',
-    score: 0,
-    best: 0,
     wave: 0,
-    kills: 0,
-    salvage: 0,
-    beaconIntegrity: BEACON.maxIntegrity,
-    ship: { x: FIELD.width / 2, y: FIELD.height / 2 + 170, vx: 0, vy: 0, angle: -Math.PI / 2, hull: SHIP.maxHull, invuln: 0, fireTimer: 0 },
-    bullets: [],
-    enemies: [],
-    salvageDrops: [],
-    particles: [],
-    floaters: [],
-    stars: [],
-    spawnQueue: [],
-    spawnTimer: 0,
-    shopTimer: 0,
-    waveBanner: '',
-    bannerTimer: 0,
+    waveTime: 0,
+    calmTime: 0,
+    upgradeTime: 0,
+    wind: { name: 'N', dx: 0, dy: -1, strength: 1 },
+    water: PLAYER.tankMax,
+    score: 0,
+    extinguished: 0,
+    dug: 0,
+    treesStart: 0,
+    treesBonus: 0,
+    stationBurn: 0,
+    banner: '',
+    bannerTime: 0,
     shake: 0,
-    upgrades: { fire: 0, damage: 0, speed: 0, repair: 0 },
-    won: false,
+    mods: defaultMods(),
+    upgrades: [],
     overReason: '',
+    won: false,
+    forest: null,
+    player: null,
+    particles: null,
+    floaters: [],
+    titleLightTimer: 0,
   };
 
-  function makeStars() {
-    state.stars = [];
-    for (let layer = 0; layer < 3; layer += 1) {
-      const count = 40 + layer * 30;
-      for (let i = 0; i < count; i += 1) {
-        state.stars.push({
-          x: random() * FIELD.width,
-          y: random() * FIELD.height,
-          layer,
-          size: 0.6 + layer * 0.7 + random() * 0.8,
-          twinkle: random() * Math.PI * 2,
-        });
-      }
-    }
-  }
-
-  function burst(x, y, color, count, speed) {
-    for (let i = 0; i < count; i += 1) {
-      const angle = random() * Math.PI * 2;
-      const power = range(random, speed * 0.3, speed);
-      state.particles.push({
-        x, y,
-        vx: Math.cos(angle) * power,
-        vy: Math.sin(angle) * power,
-        life: range(random, 0.3, 0.8),
-        maxLife: 0.8,
-        color,
-        size: range(random, 2, 5),
-      });
-    }
-  }
-
   function floater(x, y, text, color) {
-    state.floaters.push({ x, y, text, color, life: 1.1 });
-  }
-
-  function fireRate() {
-    return SHIP.fireCooldown * Math.pow(0.82, state.upgrades.fire);
-  }
-
-  function bulletDamage() {
-    return SHIP.bulletDamage + state.upgrades.damage;
-  }
-
-  function shipSpeed() {
-    return SHIP.speed * (1 + 0.12 * state.upgrades.speed);
+    state.floaters.push({ x, y, text, color, life: 1.2 });
   }
 
   function startWave(n) {
     state.wave = n;
-    const counts = waveComposition(n);
-    const queue = [];
-    for (const [type, count] of Object.entries(counts)) {
-      for (let i = 0; i < count; i += 1) queue.push(type);
-    }
-    for (let i = queue.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(random() * (i + 1));
-      [queue[i], queue[j]] = [queue[j], queue[i]];
-    }
-    state.spawnQueue = queue;
-    state.spawnTimer = 0.8;
-    state.phase = 'play';
-    state.waveBanner = n === 1 ? 'WAVE 1 — THEY COME FOR THE BEACON' : `WAVE ${n}`;
-    state.bannerTimer = 2.2;
-    if (n > 1) state.ship.hull = Math.min(SHIP.maxHull, state.ship.hull + 1);
+    state.waveTime = 0;
+    state.wind = rollWind(random, n);
+    const lit = igniteEdge(state.forest, state.wind, 1 + n, random);
+    state.banner = `WAVE ${n} OF ${WAVES} — WIND ${state.wind.name}${' ▮'.repeat(state.wind.strength)}`;
+    state.bannerTime = 2.6;
+    state.phase = 'wave';
+    return lit;
   }
 
   function endGame(reason, won) {
     state.phase = won ? 'won' : 'over';
     state.won = won;
     state.overReason = reason;
-    if (won) state.score += 500;
+    // The trees-saved bonus is a victory bonus: a lost run scores its waves and
+    // its fires put out, nothing more.
+    state.treesBonus = won ? state.forest.treesAlive() * SCORE.tree : 0;
+    state.score += state.treesBonus;
   }
 
-  function damageBeacon() {
-    state.beaconIntegrity -= 1;
-    state.shake = Math.max(state.shake, 14);
-    burst(BEACON.x, BEACON.y, '#ffb347', 26, 260);
-    if (state.beaconIntegrity <= 0) {
-      burst(BEACON.x, BEACON.y, '#ffb347', 60, 420);
-      burst(BEACON.x, BEACON.y, '#ffffff', 30, 300);
-      endGame('The beacon fell. The light went out.', false);
-      return EVENT_BEACON_HIT | EVENT_OVER;
+  function stepFireAndStation(dt) {
+    const stats = { ignitions: 0, embers: 0, burnouts: 0 };
+    stepFire(state.forest, state.wind, dt, random, stats, state.mods.emberFactor);
+    // The station burns: a few seconds to douse it before the game is lost.
+    let stationBurning = false;
+    for (const [col, row] of STATION_CELLS) {
+      const cell = state.forest.at(col, row);
+      if (cell && cell.fire > 0) stationBurning = true;
     }
-    return EVENT_BEACON_HIT;
-  }
-
-  function killEnemy(enemy, index) {
-    const type = ENEMY_TYPES[enemy.type];
-    state.enemies.splice(index, 1);
-    state.score += type.score;
-    state.kills += 1;
-    burst(enemy.x, enemy.y, type.color, 18, 240);
-    floater(enemy.x, enemy.y - 10, `+${type.score}`, '#eef2ff');
-    for (let i = 0; i < type.salvage; i += 1) {
-      const angle = random() * Math.PI * 2;
-      state.salvageDrops.push({
-        x: enemy.x, y: enemy.y,
-        vx: Math.cos(angle) * 60, vy: Math.sin(angle) * 60,
-        life: SALVAGE.life, value: 1,
-      });
+    if (stationBurning) {
+      state.stationBurn += dt;
+      state.shake = Math.max(state.shake, 6);
+      if (state.stationBurn >= STATION_BURN_LIMIT) {
+        endGame('The ranger station burned down.', false);
+        return EVENT_OVER;
+      }
+    } else {
+      state.stationBurn = Math.max(0, state.stationBurn - dt * 2);
     }
-    return EVENT_KILL;
+    return EVENT_NONE;
   }
 
-  function stepPlay(dt, move, aim, firing) {
+  function stepPlayer(dt, input) {
     let events = EVENT_NONE;
-    const ship = state.ship;
-    const speed = shipSpeed();
-
-    // Ship: accelerate toward the move direction, drag, clamp to the field.
-    ship.vx += move.x * SHIP.accel * dt;
-    ship.vy += move.y * SHIP.accel * dt;
-    ship.vx *= Math.pow(SHIP.drag, dt * 60);
-    ship.vy *= Math.pow(SHIP.drag, dt * 60);
-    const v = Math.hypot(ship.vx, ship.vy);
-    if (v > speed) {
-      ship.vx = (ship.vx / v) * speed;
-      ship.vy = (ship.vy / v) * speed;
-    }
-    ship.x = Math.min(FIELD.width - 20, Math.max(20, ship.x + ship.vx * dt));
-    ship.y = Math.min(FIELD.height - 20, Math.max(20, ship.y + ship.vy * dt));
-    ship.angle = Math.atan2(aim.y - ship.y, aim.x - ship.x);
-    if (ship.invuln > 0) ship.invuln -= dt;
-
-    // Fire toward the aim point.
-    ship.fireTimer -= dt;
-    if (firing && ship.fireTimer <= 0) {
-      ship.fireTimer = fireRate();
-      const a = ship.angle;
-      state.bullets.push({
-        x: ship.x + Math.cos(a) * 20,
-        y: ship.y + Math.sin(a) * 20,
-        vx: Math.cos(a) * SHIP.bulletSpeed,
-        vy: Math.sin(a) * SHIP.bulletSpeed,
-        life: BULLET.life,
-      });
-      events |= 0; // the caller plays the shot sound when firing is true
-    }
-
-    // Spawn the wave's queue, one enemy at a time.
-    if (state.spawnQueue.length > 0) {
-      state.spawnTimer -= dt;
-      if (state.spawnTimer <= 0) {
-        state.spawnTimer = Math.max(0.35, 0.85 - state.wave * 0.05);
-        const type = state.spawnQueue.shift();
-        const point = spawnPoint(random);
-        const def = ENEMY_TYPES[type];
-        state.enemies.push({
-          type,
-          x: point.x, y: point.y,
-          vx: 0, vy: 0,
-          hp: def.hp,
-          angle: 0,
-          wobble: random() * Math.PI * 2,
-          wobbleSpeed: range(random, 1.2, 2.4),
-        });
+    const player = state.player;
+    const move = input.move || { x: 0, y: 0 };
+    movePlayer(player, state.forest, move.x, move.y, state.mods.speed, dt);
+    if (input.dig) {
+      const dug = digStep(player, state.forest, state.mods.digTime, dt);
+      if (dug) {
+        state.dug += 1;
+        state.particles.dust(dug.col * CELL + CELL / 2, GRID_Y + dug.row * CELL + CELL / 2);
+        events |= EVENT_DIG;
       }
     }
-
-    // Enemies spiral toward the beacon with a sideways drift.
-    for (let i = state.enemies.length - 1; i >= 0; i -= 1) {
-      const enemy = state.enemies[i];
-      const def = ENEMY_TYPES[enemy.type];
-      const dx = BEACON.x - enemy.x;
-      const dy = BEACON.y - enemy.y;
-      const dist = Math.hypot(dx, dy) || 1;
-      const inward = def.speed * (1 + (state.wave - 1) * 0.04);
-      const tangent = def.speed * 0.55;
-      const wob = Math.sin(state.time * enemy.wobbleSpeed + enemy.wobble) * 0.35;
-      const tx = (-dy / dist) * (tangent + wob * tangent);
-      const ty = (dx / dist) * (tangent + wob * tangent);
-      enemy.vx = (dx / dist) * inward + tx;
-      enemy.vy = (dy / dist) * inward + ty;
-      enemy.x += enemy.vx * dt;
-      enemy.y += enemy.vy * dt;
-      enemy.angle += dt * 1.5;
-      if (dist < BEACON.radius + def.radius) {
-        state.enemies.splice(i, 1);
-        burst(enemy.x, enemy.y, def.color, 14, 200);
-        events |= damageBeacon();
-        if (events & EVENT_OVER) return events;
-      }
-    }
-
-    // Bullets fly straight and die on the first enemy they touch.
-    for (let i = state.bullets.length - 1; i >= 0; i -= 1) {
-      const bullet = state.bullets[i];
-      bullet.x += bullet.vx * dt;
-      bullet.y += bullet.vy * dt;
-      bullet.life -= dt;
-      let dead = bullet.life <= 0 || bullet.x < -20 || bullet.x > FIELD.width + 20 || bullet.y < -20 || bullet.y > FIELD.height + 20;
-      if (!dead) {
-        for (let j = state.enemies.length - 1; j >= 0; j -= 1) {
-          const enemy = state.enemies[j];
-          const def = ENEMY_TYPES[enemy.type];
-          const dx = bullet.x - enemy.x;
-          const dy = bullet.y - enemy.y;
-          if (dx * dx + dy * dy < (def.radius + BULLET.radius) * (def.radius + BULLET.radius)) {
-            dead = true;
-            enemy.hp -= bulletDamage();
-            burst(bullet.x, bullet.y, '#aef6ff', 5, 120);
-            if (enemy.hp <= 0) events |= killEnemy(enemy, j);
-            break;
-          }
-        }
-      }
-      if (dead) state.bullets.splice(i, 1);
-    }
-
-    // A ship that rams an enemy destroys it and loses one hull.
-    if (ship.invuln <= 0) {
-      for (let i = state.enemies.length - 1; i >= 0; i -= 1) {
-        const enemy = state.enemies[i];
-        const def = ENEMY_TYPES[enemy.type];
-        const dx = ship.x - enemy.x;
-        const dy = ship.y - enemy.y;
-        if (dx * dx + dy * dy < (def.radius + SHIP.radius) * (def.radius + SHIP.radius)) {
-          state.enemies.splice(i, 1);
-          burst(enemy.x, enemy.y, def.color, 20, 260);
-          ship.hull -= 1;
-          ship.invuln = SHIP.invulnerable;
-          ship.vx = (dx / (Math.hypot(dx, dy) || 1)) * 320;
-          ship.vy = (dy / (Math.hypot(dx, dy) || 1)) * 320;
-          state.shake = Math.max(state.shake, 10);
-          events |= EVENT_SHIP_HIT;
-          if (ship.hull <= 0) {
-            burst(ship.x, ship.y, '#4de8ff', 50, 380);
-            endGame('Your ship was torn apart defending the beacon.', false);
-            events |= EVENT_OVER;
-            return events;
-          }
-          break;
-        }
-      }
-    }
-
-    // Salvage drifts, is pulled toward a near ship, and is collected on touch.
-    for (let i = state.salvageDrops.length - 1; i >= 0; i -= 1) {
-      const drop = state.salvageDrops[i];
-      drop.life -= dt;
-      const dx = ship.x - drop.x;
-      const dy = ship.y - drop.y;
-      const dist = Math.hypot(dx, dy) || 1;
-      if (dist < SALVAGE.magnetRadius) {
-        drop.vx += (dx / dist) * 900 * dt;
-        drop.vy += (dy / dist) * 900 * dt;
+    if (input.water) {
+      const out = splashAt(player, state.forest, state.water, state.mods, input.waterTarget || null);
+      if (out >= 0) {
+        state.water -= PLAYER.splashCost;
+        state.extinguished += out;
+        state.score += out * SCORE.extinguish;
+        const cx = input.waterTarget ? input.waterTarget.col : Math.floor(player.x / CELL);
+        const cy = input.waterTarget ? input.waterTarget.row : Math.floor((player.y - GRID_Y) / CELL);
+        state.particles.splash(cx * CELL + CELL / 2, GRID_Y + cy * CELL + CELL / 2);
+        if (out > 0) floater(cx * CELL + CELL / 2, GRID_Y + cy * CELL, `+${out * SCORE.extinguish}`, '#7ec8f2');
+        events |= EVENT_SPLASH;
       } else {
-        drop.vx *= 0.96;
-        drop.vy *= 0.96;
-      }
-      drop.x += drop.vx * dt;
-      drop.y += drop.vy * dt;
-      if (dist < SALVAGE.collectRadius) {
-        state.salvage += drop.value;
-        state.salvageDrops.splice(i, 1);
-        events |= EVENT_SALVAGE;
-        continue;
-      }
-      if (drop.life <= 0) state.salvageDrops.splice(i, 1);
-    }
-
-    // Wave cleared: no enemies left and nothing left to spawn.
-    if (state.spawnQueue.length === 0 && state.enemies.length === 0) {
-      if (state.wave >= WIN_WAVE) {
-        endGame('Ten waves held. The beacon still burns.', true);
-        events |= EVENT_WON | EVENT_OVER;
-      } else {
-        state.phase = 'shop';
-        state.shopTimer = SHOP_SECONDS;
-        state.score += 25 + state.wave * 10;
-        events |= EVENT_WAVE_CLEAR;
+        events |= EVENT_DENIED;
       }
     }
+    state.water = refillStep(player, state.forest, state.water, state.mods, dt);
     return events;
   }
 
-  function stepParticles(dt) {
-    for (let i = state.particles.length - 1; i >= 0; i -= 1) {
-      const p = state.particles[i];
-      p.x += p.vx * dt;
-      p.y += p.vy * dt;
-      p.vx *= 0.97;
-      p.vy *= 0.97;
-      p.life -= dt;
-      if (p.life <= 0) state.particles.splice(i, 1);
+  function emitFireParticles() {
+    const cells = state.forest.cells;
+    let seen = 0;
+    for (let row = 0; row < ROWS; row += 1) {
+      for (let col = 0; col < COLS; col += 1) {
+        const cell = cells[row * COLS + col];
+        if (cell.fire <= 0) continue;
+        seen += 1;
+        if (seen % 2 === 0) continue;
+        const x = col * CELL + CELL / 2;
+        const y = GRID_Y + row * CELL + CELL / 2;
+        state.particles.ember(x, y, state.wind.dx);
+        if (seen % 3 === 0) state.particles.smoke(x, y - 10);
+      }
     }
-    for (let i = state.floaters.length - 1; i >= 0; i -= 1) {
-      const f = state.floaters[i];
-      f.y -= 34 * dt;
-      f.life -= dt;
-      if (f.life <= 0) state.floaters.splice(i, 1);
-    }
-    if (state.bannerTimer > 0) state.bannerTimer -= dt;
-    if (state.shake > 0) state.shake = Math.max(0, state.shake - 40 * dt);
   }
 
-  return {
+  // The world is usable from the moment it is created: the title screen steps it
+  // before any game starts, so reset once here.
+  const api = {
     state,
+
     reset() {
       state.time = 0;
       state.phase = 'title';
-      state.score = 0;
       state.wave = 0;
-      state.kills = 0;
-      state.salvage = 0;
-      state.beaconIntegrity = BEACON.maxIntegrity;
-      state.ship = { x: FIELD.width / 2, y: FIELD.height / 2 + 170, vx: 0, vy: 0, angle: -Math.PI / 2, hull: SHIP.maxHull, invuln: 0, fireTimer: 0 };
-      state.bullets = [];
-      state.enemies = [];
-      state.salvageDrops = [];
-      state.particles = [];
-      state.floaters = [];
-      state.spawnQueue = [];
-      state.spawnTimer = 0;
-      state.shopTimer = 0;
-      state.waveBanner = '';
-      state.bannerTimer = 0;
+      state.waveTime = 0;
+      state.calmTime = 0;
+      state.upgradeTime = 0;
+      state.wind = { name: 'N', dx: 0, dy: -1, strength: 1 };
+      state.water = PLAYER.tankMax;
+      state.score = 0;
+      state.extinguished = 0;
+      state.dug = 0;
+      state.treesBonus = 0;
+      state.stationBurn = 0;
+      state.banner = '';
+      state.bannerTime = 0;
       state.shake = 0;
-      state.upgrades = { fire: 0, damage: 0, speed: 0, repair: 0 };
-      state.won = false;
+      state.mods = defaultMods();
+      state.upgrades = [];
       state.overReason = '';
-      makeStars();
-      // A few drones drift around the beacon behind the title screen.
-      for (let i = 0; i < 5; i += 1) {
-        const a = (i / 5) * Math.PI * 2;
-        state.enemies.push({
-          type: 'drone', x: BEACON.x + Math.cos(a) * 240, y: BEACON.y + Math.sin(a) * 240,
-          vx: 0, vy: 0, hp: 1, angle: a, wobble: a, wobbleSpeed: 0.5,
-        });
-      }
+      state.won = false;
+      state.floaters = [];
+      state.titleLightTimer = 0;
+      state.forest = createForest(random);
+      state.treesStart = state.forest.treesTotal();
+      state.player = createPlayer();
+      state.particles = createParticles(random);
     },
+
     startGame() {
       this.reset();
-      // The title screen's ambient drones are decoration, not wave 1.
-      state.enemies = [];
       startWave(1);
     },
-    nextWave() {
-      if (state.phase !== 'shop') return;
+
+    /** The upgrade screen's three cards. */
+    upgradeChoices() {
+      return state.upgrades.map((u, i) => ({ key: String(i + 1), name: u.name, desc: u.desc }));
+    },
+
+    pickUpgrade(index) {
+      if (state.phase !== 'upgrade') return false;
+      const upgrade = state.upgrades[index];
+      if (!upgrade) return false;
+      upgrade.apply(state.mods, this);
+      state.upgrades = [];
       startWave(state.wave + 1);
-    },
-    shopItems() {
-      return UPGRADES.map((u) => {
-        const level = state.upgrades[u.id];
-        return {
-          id: u.id, key: u.key, name: u.name, desc: u.desc,
-          level, max: u.max,
-          cost: level >= u.max ? null : upgradeCost(u, level),
-          owned: level >= u.max,
-        };
-      });
-    },
-    buyUpgrade(id) {
-      const upgrade = UPGRADES.find((u) => u.id === id);
-      if (!upgrade || state.phase !== 'shop') return false;
-      const level = state.upgrades[id];
-      if (level >= upgrade.max) return false;
-      const cost = upgradeCost(upgrade, level);
-      if (state.salvage < cost) return false;
-      state.salvage -= cost;
-      state.upgrades[id] = level + 1;
-      if (id === 'repair') state.beaconIntegrity = Math.min(BEACON.maxIntegrity, state.beaconIntegrity + 1);
       return true;
     },
-    step(dt, move, aim, firing) {
+
+    /** Mark random living trees fireproof, for the saplings upgrade. */
+    plantFireproof(count) {
+      let planted = 0;
+      let guard = 0;
+      while (planted < count && guard < 500) {
+        guard += 1;
+        const cell = state.forest.cells[Math.floor(random() * state.forest.cells.length)];
+        if (cell.type === TYPE_TREE && !cell.burnt && !cell.fireproof) {
+          cell.fireproof = true;
+          planted += 1;
+        }
+      }
+      return planted;
+    },
+
+    step(dt, input) {
       state.time += dt;
-      stepParticles(dt);
+      if (state.bannerTime > 0) state.bannerTime -= dt;
+      if (state.shake > 0) state.shake = Math.max(0, state.shake - 30 * dt);
+      state.particles.step(dt);
+      for (let i = state.floaters.length - 1; i >= 0; i -= 1) {
+        const f = state.floaters[i];
+        f.y -= 30 * dt;
+        f.life -= dt;
+        if (f.life <= 0) state.floaters.splice(i, 1);
+      }
+
       if (state.phase === 'title') {
-        // Ambient drift: the title drones circle the beacon, never attacking.
-        for (const enemy of state.enemies) {
-          enemy.angle += dt * 0.4;
-          const r = 240 + Math.sin(state.time * 0.6 + enemy.wobble) * 30;
-          enemy.x = BEACON.x + Math.cos(enemy.angle) * r;
-          enemy.y = BEACON.y + Math.sin(enemy.angle) * r;
+        // A little fire smoulders in the north behind the title screen.
+        state.titleLightTimer -= dt;
+        if (state.titleLightTimer <= 0) {
+          state.titleLightTimer = 2;
+          if (state.forest.burningCount() < 6) {
+            const col = Math.floor(random() * COLS);
+            const cell = state.forest.at(col, 0);
+            if (cell && cell.type === TYPE_TREE && cell.fire <= 0 && !cell.burnt) {
+              cell.fire = 6;
+            }
+          }
+        }
+        stepFire(state.forest, state.wind, dt, random, { ignitions: 0, embers: 0, burnouts: 0 }, 1);
+        emitFireParticles();
+        return EVENT_NONE;
+      }
+
+      if (state.phase === 'upgrade') {
+        // The choice waits for the player, but not forever: after a while the
+        // first card is taken and the next wave starts on its own.
+        state.upgradeTime += dt;
+        if (state.upgradeTime >= UPGRADE_SECONDS) {
+          this.pickUpgrade(0);
         }
         return EVENT_NONE;
       }
-      if (state.phase === 'shop') {
-        state.shopTimer -= dt;
-        // Salvage still drifts in during the shop.
-        for (let i = state.salvageDrops.length - 1; i >= 0; i -= 1) {
-          const drop = state.salvageDrops[i];
-          drop.life -= dt;
-          if (drop.life <= 0) state.salvageDrops.splice(i, 1);
-        }
-        if (state.shopTimer <= 0) this.nextWave();
+      if (state.phase === 'over' || state.phase === 'won') {
         return EVENT_NONE;
       }
-      if (state.phase === 'play') return stepPlay(dt, move, aim, firing);
-      return EVENT_NONE;
+
+      let events = stepPlayer(dt, input);
+      if (events & EVENT_OVER) return events;
+      const fireEvents = stepFireAndStation(dt);
+      events |= fireEvents;
+      if (events & EVENT_OVER) return events;
+      emitFireParticles();
+
+      if (state.phase === 'wave') {
+        state.waveTime += dt;
+        if (state.waveTime >= WAVE_SECONDS) {
+          state.phase = 'calm';
+          state.calmTime = 0;
+          state.score += SCORE.wave;
+          state.banner = `WAVE ${state.wave} CLEAR — MOP UP, THEN REST`;
+          state.bannerTime = 2.6;
+          events |= EVENT_WAVE_CLEAR;
+        }
+      } else if (state.phase === 'calm') {
+        state.calmTime += dt;
+        if (state.calmTime >= CALM_SECONDS) {
+          if (state.wave >= WAVES) {
+            endGame('Seven waves held. The forest stands.', true);
+            events |= EVENT_WIN | EVENT_OVER;
+          } else {
+            state.phase = 'upgrade';
+            state.upgradeTime = 0;
+            state.upgrades = chooseUpgrades(random);
+            events |= EVENT_UPGRADE;
+          }
+        }
+      }
+      return events;
     },
   };
+
+  api.reset();
+  return api;
 }

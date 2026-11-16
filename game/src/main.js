@@ -1,25 +1,49 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed
-// 1/60 s steps (several in a slow frame, none in a fast one), and the renderer
-// paints what is there. The game moves between six screens: title, play, shop,
-// paused, game over and victory.
+// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s
+// steps (several in a slow frame, none in a fast one), and the renderer paints what is
+// there. The game moves between six screens: title, play, upgrade, paused, game over
+// and victory.
 //
-// ?seed=N fixes the enemy pattern. ?shot=start|play|end (with &seed=N) stages that
-// scene instead of running the loop, paints it twice and sets window.__shotReady
-// for a screenshot.
-import { BEST_KEY, STEP } from './config.js';
+// ?seed=N fixes the fire pattern. ?shot=start|play|upgrade|end (with &seed=N) stages
+// that scene instead of running the loop, paints it twice and sets
+// window.__shotReady for a screenshot.
+import { BEST_KEY, CELL, GRID_Y, STEP } from './config.js';
 import { createRandom } from './random.js';
-import { createAudio } from './audio.js';
-import { createWorld, EVENT_BEACON_HIT, EVENT_KILL, EVENT_OVER, EVENT_SALVAGE, EVENT_SHIP_HIT, EVENT_WAVE_CLEAR, EVENT_WON } from './world.js';
+import { isMuted, setCrackle, setMuted, sfx } from './audio.js';
 import {
-  ACTION_CONFIRM, ACTION_MUTE, ACTION_NEXT_WAVE, ACTION_PAUSE, ACTION_SHOP_1,
-  ACTION_SHOP_2, ACTION_SHOP_3, ACTION_SHOP_4, createInput,
+  EVENT_DIG,
+  EVENT_OVER,
+  EVENT_SPLASH,
+  EVENT_UPGRADE,
+  EVENT_WAVE_CLEAR,
+  EVENT_WIN,
+  createWorld,
+} from './world.js';
+import {
+  ACTION_CLICK,
+  ACTION_CONFIRM,
+  ACTION_MUTE,
+  ACTION_NEXT,
+  ACTION_PAUSE,
+  ACTION_PICK_1,
+  ACTION_PICK_2,
+  ACTION_PICK_3,
+  ACTION_WATER,
+  createInput,
 } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_SHOP, SCREEN_TITLE, SCREEN_WON } from './render.js';
+import {
+  SCREEN_OVER,
+  SCREEN_PAUSED,
+  SCREEN_PLAY,
+  SCREEN_TITLE,
+  SCREEN_UPGRADE,
+  SCREEN_WON,
+  createRenderer,
+  upgradeCardRect,
+} from './render.js';
 import { stageShot } from './shots.js';
 
 const MAX_FRAME = 0.25;
-const SHOP_ACTIONS = [ACTION_SHOP_1, ACTION_SHOP_2, ACTION_SHOP_3, ACTION_SHOP_4];
-const SHOP_IDS = ['fire', 'damage', 'speed', 'repair'];
+const PICK_ACTIONS = [ACTION_PICK_1, ACTION_PICK_2, ACTION_PICK_3];
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
@@ -51,7 +75,7 @@ function runShot(name) {
   const scene = stageShot(name, world);
   let painted = 0;
   function paint() {
-    renderer.draw(world.state, scene.screen, scene.best, world.shopItems());
+    renderer.draw(world.state, scene.screen, scene.best, { upgrades: world.upgradeChoices() });
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
     else window.__shotReady = true;
@@ -60,104 +84,139 @@ function runShot(name) {
 }
 
 function runGame() {
-  const audio = createAudio();
   const input = createInput(canvas, (x, y) => renderer.toField(x, y));
   let screen = SCREEN_TITLE;
   let best = readBest();
   let accumulator = 0;
   let last = performance.now();
+  // A water drop asked for this frame (K, or a click on the field): the first
+  // simulation step of the frame takes it, so it fires exactly once.
+  let waterRequest = null;
 
   function announce(message) {
     status.textContent = message;
   }
 
   function startGame() {
-    audio.unlock();
     world.startGame();
     screen = SCREEN_PLAY;
-    audio.waveHorn();
-    announce('Playing. Defend the beacon.');
+    sfx.horn();
+    announce('Playing. Hold the line against the fire.');
   }
 
   function endGame() {
     screen = world.state.won ? SCREEN_WON : SCREEN_OVER;
+    if (world.state.won) sfx.win();
+    else sfx.lose();
     if (world.state.score > best) {
       best = world.state.score;
       saveBest(best);
     }
-    announce(world.state.won ? `Victory. Score ${world.state.score}.` : `Game over. Score ${world.state.score}. Best ${best}.`);
+    announce(
+      world.state.won
+        ? `Victory. Score ${world.state.score}.`
+        : `Game over. Score ${world.state.score}. Best ${best}.`,
+    );
   }
 
-  function playEvents(events) {
-    if (events & EVENT_KILL) audio.explosion();
-    if (events & EVENT_SALVAGE) audio.pickup();
-    if (events & EVENT_SHIP_HIT) audio.hit();
-    if (events & EVENT_BEACON_HIT) audio.alarm();
-    if (events & EVENT_WAVE_CLEAR) audio.waveHorn();
-    if (events & EVENT_WON) audio.waveHorn();
+  function clickCell(point) {
+    return {
+      col: Math.floor(point.x / CELL),
+      row: Math.floor((point.y - GRID_Y) / CELL),
+    };
   }
 
   function handleActions() {
     const actions = input.takeActions();
     if (actions & ACTION_MUTE) {
-      const muted = audio.toggleMute();
-      announce(muted ? 'Sound off.' : 'Sound on.');
+      setMuted(!isMuted());
+      announce(isMuted() ? 'Sound off.' : 'Sound on.');
     }
     if (screen === SCREEN_TITLE || screen === SCREEN_OVER || screen === SCREEN_WON) {
-      if (actions & ACTION_CONFIRM) startGame();
+      if (actions & (ACTION_CONFIRM | ACTION_CLICK)) startGame();
       return;
     }
     if (screen === SCREEN_PLAY) {
       if (actions & ACTION_PAUSE) {
         screen = SCREEN_PAUSED;
         announce('Paused.');
+        return;
+      }
+      if (actions & ACTION_WATER) {
+        waterRequest = { target: null };
+      } else if (actions & ACTION_CLICK) {
+        const point = input.clickPoint();
+        if (point.y >= GRID_Y) waterRequest = { target: clickCell(point) };
       }
       return;
     }
     if (screen === SCREEN_PAUSED) {
-      if (actions & (ACTION_PAUSE | ACTION_CONFIRM)) {
+      if (actions & (ACTION_PAUSE | ACTION_CONFIRM | ACTION_CLICK)) {
         screen = SCREEN_PLAY;
         announce('Playing.');
       }
       return;
     }
-    if (screen === SCREEN_SHOP) {
-      for (let i = 0; i < SHOP_ACTIONS.length; i += 1) {
-        if (actions & SHOP_ACTIONS[i]) {
-          if (world.buyUpgrade(SHOP_IDS[i])) audio.buy();
-          else audio.denied();
+    if (screen === SCREEN_UPGRADE) {
+      for (let i = 0; i < PICK_ACTIONS.length; i += 1) {
+        if (actions & PICK_ACTIONS[i] && world.pickUpgrade(i)) {
+          sfx.upgrade();
+          screen = SCREEN_PLAY;
+          sfx.horn();
+          announce(`Wave ${world.state.wave}.`);
+          return;
         }
       }
-      if (actions & ACTION_NEXT_WAVE) {
-        world.nextWave();
-        screen = SCREEN_PLAY;
-        audio.waveHorn();
-        announce(`Wave ${world.state.wave}.`);
+      if (actions & ACTION_CLICK) {
+        const point = input.clickPoint();
+        for (let i = 0; i < 3; i += 1) {
+          const r = upgradeCardRect(i);
+          if (point.x >= r.x && point.x <= r.x + r.w && point.y >= r.y && point.y <= r.y + r.h) {
+            if (world.pickUpgrade(i)) {
+              sfx.upgrade();
+              screen = SCREEN_PLAY;
+              sfx.horn();
+              announce(`Wave ${world.state.wave}.`);
+            }
+            return;
+          }
+        }
+      }
+      if (actions & ACTION_NEXT) {
+        // N skips the choice and takes the first card.
+        if (world.pickUpgrade(0)) {
+          sfx.upgrade();
+          screen = SCREEN_PLAY;
+          sfx.horn();
+          announce(`Wave ${world.state.wave}.`);
+        }
       }
     }
   }
 
   function step() {
     if (screen === SCREEN_TITLE) {
-      world.step(STEP, { x: 0, y: 0 }, { x: 640, y: 260 }, false);
+      world.step(STEP, { move: { x: 0, y: 0 }, dig: false, water: false, waterTarget: null });
       return;
     }
-    if (screen === SCREEN_SHOP) {
-      world.step(STEP, { x: 0, y: 0 }, { x: 640, y: 260 }, false);
-      if (world.state.phase === 'play') screen = SCREEN_PLAY;
-      return;
-    }
+    if (screen === SCREEN_UPGRADE) return;
     if (screen !== SCREEN_PLAY) return;
-    const move = input.direction();
-    const aim = input.aim();
-    const firing = input.firing();
-    const events = world.step(STEP, move, aim, firing);
-    if (firing && world.state.ship.fireTimer > 0.18) audio.shoot();
-    playEvents(events);
+    const request = waterRequest;
+    waterRequest = null;
+    const events = world.step(STEP, {
+      move: input.direction(),
+      dig: input.digging(),
+      water: request !== null,
+      waterTarget: request ? request.target : null,
+    });
+    if (events & EVENT_DIG) sfx.dig();
+    if (events & EVENT_SPLASH) sfx.splash();
+    if (events & EVENT_WAVE_CLEAR) sfx.horn();
     if (events & EVENT_OVER) endGame();
-    else if (events & EVENT_WAVE_CLEAR) {
-      screen = SCREEN_SHOP;
-      announce(`Wave cleared. Spend your salvage, then press N for the next wave.`);
+    else if (events & EVENT_UPGRADE) {
+      screen = SCREEN_UPGRADE;
+      sfx.upgrade();
+      announce('Wave clear. Choose an upgrade, then face the next wave.');
     }
   }
 
@@ -166,18 +225,26 @@ function runGame() {
     accumulator += Math.min((now - last) / 1000, MAX_FRAME);
     last = now;
     handleActions();
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY || screen === SCREEN_SHOP) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY || screen === SCREEN_SHOP)) {
+    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY || screen === SCREEN_UPGRADE) {
+      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY || screen === SCREEN_UPGRADE)) {
         step();
         accumulator -= STEP;
       }
     } else {
       accumulator = 0;
     }
-    world.state.aim = screen === SCREEN_PLAY ? input.aim() : null;
-    renderer.draw(world.state, screen, best, world.shopItems());
+    setCrackle(Math.min(1, world.state.forest.burningCount() / 40));
+    // The upgrade screen can end on its own (the 20 s auto-pick): follow the
+    // world back into play when it does.
+    if (screen === SCREEN_UPGRADE && world.state.phase === 'play') {
+      screen = SCREEN_PLAY;
+      sfx.horn();
+      announce(`Wave ${world.state.wave}.`);
+    }
+    renderer.draw(world.state, screen, best, { upgrades: world.upgradeChoices() });
   }
 
+  // Leaving the tab pauses a running game rather than letting the fire spread unseen.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && screen === SCREEN_PLAY) {
       screen = SCREEN_PAUSED;
@@ -185,7 +252,7 @@ function runGame() {
     }
   });
 
-  announce('Starward. Press Space or click to launch.');
+  announce('Emberline. Press Space or click to start.');
   requestAnimationFrame(frame);
 }
 

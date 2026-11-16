@@ -1,74 +1,99 @@
-// Starward: every tuning number and colour in one place. The playfield is a fixed
-// 1280x720 logical area; the renderer scales it to the window, so no rule below
-// depends on the screen size.
+// Every tuning number and colour in one place. The playfield is a fixed 1280x720 logical
+// area; the renderer scales it to the window, so no rule below depends on the screen size.
+// The grid sits between a 64 px HUD bar on top and a 16 px hint strip at the bottom.
 export const FIELD = { width: 1280, height: 720 };
-export const BEACON = { x: 640, y: 360, radius: 34, maxIntegrity: 3 };
+
+export const HUD_H = 64;
+export const HINT_H = 16;
+export const CELL = 32;
+export const COLS = 40;
+export const ROWS = 20;
+export const GRID_Y = HUD_H;
+
+/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
 export const STEP = 1 / 60;
-export const WIN_WAVE = 10;
 
-export const SHIP = {
-  radius: 14,
-  speed: 340,
-  accel: 2400,
-  drag: 0.86,
-  fireCooldown: 0.22,
-  bulletSpeed: 720,
-  bulletDamage: 1,
-  maxHull: 3,
-  invulnerable: 1.2,
+export const WAVES = 7;
+export const WAVE_SECONDS = 60;
+export const CALM_SECONDS = 15;
+/** Seconds the upgrade screen waits before taking the first card itself. */
+export const UPGRADE_SECONDS = 20;
+
+/** How long the ranger station can burn, in seconds, before it is lost. */
+export const STATION_BURN_LIMIT = 6;
+
+export const PLAYER = {
+  radius: 13,
+  speed: 205,
+  /** Seconds of digging to turn one cell into a firebreak. */
+  digTime: 0.35,
+  tankMax: 100,
+  splashCost: 20,
+  /** Splash radius, in cells, around the target cell. */
+  splashRadius: 2,
+  wetSeconds: 25,
+  /** Water refilled per second while standing beside the pond. */
+  refillRate: 45,
 };
 
-export const BULLET = { radius: 4, life: 1.1 };
-
-// Enemy types: how each kind moves, how tough it is, what it is worth.
-export const ENEMY_TYPES = {
-  drone: { radius: 15, speed: 62, hp: 1, score: 10, salvage: 1, color: '#ff5d8f', shape: 'hex' },
-  dart: { radius: 11, speed: 118, hp: 1, score: 15, salvage: 1, color: '#ff9f43', shape: 'tri' },
-  brute: { radius: 24, speed: 40, hp: 3, score: 30, salvage: 3, color: '#ff4d4d', shape: 'square' },
-  elite: { radius: 34, speed: 52, hp: 9, score: 100, salvage: 8, color: '#c77dff', shape: 'star' },
+/** Fire spread: per-second chance a burning cell ignites a neighbour, before wind and fuel. */
+export const FIRE = {
+  igniteBase: 0.24,
+  windDown: 1.6,
+  windCross: 1.0,
+  windUp: 0.45,
+  grassFuel: 1.3,
+  treeFuel: 1.0,
+  wetResist: 0.12,
+  /** Per-second chance a burning cell throws an ember downwind. */
+  emberChance: 0.035,
+  emberMinJump: 2,
+  emberMaxJump: 4,
+  emberIgnite: 0.5,
+  burnTree: 4.5,
+  burnGrass: 2,
 };
 
-// Wave n spawns 4 + 2n enemies; the mix shifts toward faster and tougher kinds.
-export function waveComposition(wave) {
-  const total = 4 + wave * 2;
-  const counts = { drone: 0, dart: 0, brute: 0, elite: 0 };
-  for (let i = 0; i < total; i += 1) {
-    if (wave >= 5 && i === total - 1) counts.elite += 1;
-    else if (wave >= 3 && i % 5 === 4) counts.brute += 1;
-    else if (wave >= 2 && i % 3 === 2) counts.dart += 1;
-    else counts.drone += 1;
-  }
-  return counts;
-}
-
-export const SALVAGE = { radius: 7, magnetRadius: 130, collectRadius: 22, life: 9 };
-
-// Between-wave shop: each upgrade, its salvage cost growth and its cap.
-export const UPGRADES = [
-  { id: 'fire', key: '1', name: 'Rapid Cycler', desc: '+18% fire rate', base: 4, growth: 3, max: 5 },
-  { id: 'damage', key: '2', name: 'Heavy Rounds', desc: '+1 bullet damage', base: 5, growth: 4, max: 5 },
-  { id: 'speed', key: '3', name: 'Ion Thrusters', desc: '+12% ship speed', base: 3, growth: 2, max: 5 },
-  { id: 'repair', key: '4', name: 'Beacon Repair', desc: 'Restore 1 integrity', base: 6, growth: 4, max: 3 },
-];
+export const SCORE = { tree: 10, extinguish: 5, wave: 200 };
 
 export const PALETTE = {
-  backdrop: '#070a1c',
-  spaceTop: '#0b1030',
-  spaceBottom: '#05060f',
-  beacon: '#ffb347',
-  beaconCore: '#ffe6a3',
-  ship: '#4de8ff',
-  shipDark: '#1b9fc4',
-  bullet: '#aef6ff',
-  text: '#eef2ff',
-  muted: '#9aa5c9',
-  panel: 'rgba(13, 18, 46, 0.92)',
-  panelEdge: '#2c3a6e',
-  danger: '#ff5d5d',
-  salvage: '#ffd166',
-  wave: '#8affc1',
+  backdrop: '#0d1a12',
+  hud: '#101d15',
+  hudLine: '#24402e',
+  grass: '#2e5d33',
+  grassDark: '#274e2b',
+  tree: '#2f7a3d',
+  treeDark: '#256633',
+  treeLight: '#3f9a4e',
+  bare: '#6b4a2f',
+  bareDark: '#5d3f28',
+  burnt: '#17130f',
+  burntAsh: '#2a2320',
+  rock: '#5b6470',
+  rockDark: '#484f59',
+  water: '#2f7fc2',
+  waterDeep: '#1f5f96',
+  wet: '#1e4d33',
+  fireCore: '#ffd23e',
+  fireMid: '#ff8a1e',
+  fireEdge: '#e5482e',
+  smoke: '#8a8f98',
+  stationWall: '#c98f4e',
+  stationRoof: '#b3402f',
+  stationLight: '#ffd98a',
+  playerJacket: '#d8442c',
+  playerHelmet: '#f2c94c',
+  playerSkin: '#e8b98a',
+  playerPants: '#2c3e50',
+  text: '#eef5ea',
+  muted: '#9db8a4',
+  gold: '#f2c94c',
+  danger: '#ff6b4e',
+  panel: '#14261b',
+  panelLine: '#2c4a35',
 };
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
-export const BEST_KEY = 'starward.best';
-export const MUTE_KEY = 'starward.muted';
+
+/** Where the best score is kept between visits (this browser only). */
+export const BEST_KEY = 'emberline.best';
