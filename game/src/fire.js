@@ -1,6 +1,6 @@
 // The fire itself: how it spreads from cell to cell, pushed by the wind, and how water
 // puts it out. Pure simulation, no drawing and no browser in it.
-import { COLS, FIRE, ROWS } from './config.js';
+import { COLS, FIRE, ROWS, VARIANTS } from './config.js';
 import {
   TYPE_BARE,
   TYPE_GRASS,
@@ -35,15 +35,19 @@ function windFactor(wind, dc, dr) {
   return FIRE.windCross;
 }
 
-function burnTime(cell) {
+function burnTime(cell, variant) {
+  const tuned = variant ? VARIANTS[variant] : null;
+  if (tuned) return tuned.burn;
   if (cell.type === TYPE_TREE) return FIRE.burnTree;
   if (cell.type === TYPE_GRASS) return FIRE.burnGrass;
   if (cell.type === TYPE_STATION) return 1e9;
   return 0;
 }
 
-export function igniteCell(cell) {
-  cell.fire = burnTime(cell);
+/** Light a cell with a named kind of flame (default: the spreading Crown Fire). */
+export function igniteCell(cell, variant = 'crown') {
+  cell.variant = variant;
+  cell.fire = burnTime(cell, variant);
 }
 
 /**
@@ -62,6 +66,7 @@ export function stepFire(forest, wind, dt, random, stats, emberFactor) {
       cell.fire -= dt;
       if (cell.fire <= 0) {
         cell.fire = 0;
+        cell.variant = null;
         if (cell.type !== TYPE_STATION) cell.burnt = true;
         stats.burnouts += 1;
         continue;
@@ -80,12 +85,14 @@ export function stepFire(forest, wind, dt, random, stats, emberFactor) {
         const target = cells[index(nc, nr)];
         if (!forest.flammable(target)) continue;
         let chance = FIRE.igniteBase * windFactor(wind, dc, dr);
+        // Crown Fire spreads fast, Ember Imps barely spread at all.
+        if (cell.variant) chance *= VARIANTS[cell.variant].spread;
         chance *= target.type === TYPE_GRASS ? FIRE.grassFuel : FIRE.treeFuel;
         // The cabin is built to resist: it catches far slower than a tree.
         if (target.type === TYPE_STATION) chance *= 0.35;
         if (target.wet > 0) chance *= FIRE.wetResist;
         if (target.fireproof) chance = 0;
-        if (random() < chance * dt) toIgnite.push(target);
+        if (random() < chance * dt) toIgnite.push({ cell: target, variant: cell.variant || 'crown' });
       }
       // Embers: a burning cell can throw a spark several cells downwind.
       const emberChance = FIRE.emberChance * wind.strength * emberFactor;
@@ -98,23 +105,24 @@ export function stepFire(forest, wind, dt, random, stats, emberFactor) {
           // The cabin resists embers as it resists the front.
           const emberIgnite = FIRE.emberIgnite * (target.type === TYPE_STATION ? 0.35 : 1);
           if (forest.flammable(target) && target.wet <= 0 && !target.fireproof && random() < emberIgnite) {
-            toIgnite.push(target);
+            // Embers land ahead of the front as Spot Fires.
+            toIgnite.push({ cell: target, variant: 'spot' });
             stats.embers += 1;
           }
         }
       }
     }
   }
-  for (const cell of toIgnite) {
+  for (const { cell, variant } of toIgnite) {
     if (cell.fire <= 0 && !cell.burnt) {
-      igniteCell(cell);
+      igniteCell(cell, variant);
       stats.ignitions += 1;
     }
   }
 }
 
 /** Light `count` new fires along the edge the wind blows from. */
-export function igniteEdge(forest, wind, count, random) {
+export function igniteEdge(forest, wind, count, random, variant = 'crown') {
   let lit = 0;
   let guard = 0;
   while (lit < count && guard < 200) {
@@ -137,7 +145,7 @@ export function igniteEdge(forest, wind, count, random) {
     }
     const cell = forest.at(col, row);
     if (cell && forest.flammable(cell)) {
-      igniteCell(cell);
+      igniteCell(cell, variant);
       lit += 1;
     }
   }
@@ -147,8 +155,9 @@ export function igniteEdge(forest, wind, count, random) {
 /**
  * Drop water on a cell: everything burning in the radius goes out and the ground stays
  * wet, so it resists ignition for a while. Returns how many fires went out.
+ * When `counts` is given, each kind of flame doused is tallied into it.
  */
-export function douse(forest, centreCol, centreRow, radius, wetSeconds) {
+export function douse(forest, centreCol, centreRow, radius, wetSeconds, counts = null) {
   let out = 0;
   for (let dr = -radius; dr <= radius; dr += 1) {
     for (let dc = -radius; dc <= radius; dc += 1) {
@@ -159,6 +168,8 @@ export function douse(forest, centreCol, centreRow, radius, wetSeconds) {
         cell.wet = Math.max(cell.wet, wetSeconds);
         if (cell.fire > 0) {
           cell.fire = 0;
+          if (counts && cell.variant) counts[cell.variant] = (counts[cell.variant] || 0) + 1;
+          cell.variant = null;
           out += 1;
         }
       }
@@ -182,6 +193,7 @@ export function nearWater(forest, col, row) {
 export function digCell(cell) {
   cell.type = TYPE_BARE;
   cell.fire = 0;
+  cell.variant = null;
   cell.burnt = false;
   cell.wet = 0;
   cell.fireproof = false;

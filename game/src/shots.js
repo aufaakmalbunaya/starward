@@ -8,7 +8,6 @@ import { EVENT_OVER, EVENT_UPGRADE } from './world.js';
 import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE, SCREEN_UPGRADE } from './render.js';
 
 const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
 const UPGRADE_LIMIT_SECONDS = 300;
 const END_LIMIT_SECONDS = 600;
 
@@ -150,9 +149,19 @@ export function stageShot(name, world) {
   }
   world.startGame();
   if (name === 'play') {
-    for (let index = 0; index < PLAY_SECONDS / STEP; index += 1) {
+    // Play through wave 1, take the first boon, then catch wave 2 mid-fight:
+    // the frame shows live flames, the combo, and the boons owned so far.
+    for (let index = 0; index < UPGRADE_LIMIT_SECONDS / STEP; index += 1) {
       const events = world.step(STEP, autopilot(world.state));
       if (events & EVENT_OVER) break;
+      if (events & EVENT_UPGRADE) {
+        world.pickUpgrade(0);
+        for (let j = 0; j < 20 / STEP; j += 1) {
+          const ev2 = world.step(STEP, autopilot(world.state));
+          if (ev2 & EVENT_OVER) break;
+        }
+        break;
+      }
     }
     const over = world.state.phase === 'over';
     return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };

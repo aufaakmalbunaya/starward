@@ -54,7 +54,35 @@ export const FIRE = {
   burnGrass: 2,
 };
 
-export const SCORE = { tree: 10, extinguish: 5, wave: 200 };
+export const SCORE = { tree: 10, extinguish: 5, wave: 200, boss: 500 };
+
+/** Chained douses: each douse within this window of the last raises the combo. */
+export const COMBO_WINDOW = 4;
+/** Highest combo multiplier a chain can reach. */
+export const COMBO_MAX = 8;
+
+/** The Crownfire, the wave-7 boss: hit points and splash damage per hit. */
+export const BOSS = {
+  name: 'The Crownfire',
+  hp: 300,
+  /** Damage one splash deals when it lands close to the boss. */
+  splashDamage: 25,
+  /** Splashes count as hits this many cells beyond the splash radius. */
+  hitReach: 1,
+  speed: 18,
+  speedPhase2: 26,
+  speedPhase3: 34,
+};
+
+/** Fire variants: how each kind of flame behaves. */
+export const VARIANTS = {
+  /** Ember Imp: quick and short-lived, burns out fast. */
+  imp: { burn: 2, spread: 0.8 },
+  /** Crown Fire: the spreading front, catches neighbours fast. */
+  crown: { burn: 5, spread: 1.3 },
+  /** Spot Fire: dropped ahead of the front by embers. */
+  spot: { burn: 3.5, spread: 1.0 },
+};
 
 export const PALETTE = {
   backdrop: '#0d1a12',
@@ -77,6 +105,13 @@ export const PALETTE = {
   fireCore: '#ffd23e',
   fireMid: '#ff8a1e',
   fireEdge: '#e5482e',
+  /** Ember Imp flames burn white-hot and small. */
+  impCore: '#fff6c9',
+  impEdge: '#ffb03a',
+  /** Crown Fire flames burn deep red and tall. */
+  crownEdge: '#b31d12',
+  crownMid: '#ff4d00',
+  bossBar: '#ff5a2e',
   smoke: '#8a8f98',
   stationWall: '#c98f4e',
   stationRoof: '#b3402f',

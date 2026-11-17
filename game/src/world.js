@@ -3,14 +3,16 @@
 // generator, so the same seed always plays the same game. No drawing and no browser
 // in here: the renderer paints this state, and the tests step it in plain Node.
 import {
+  BOSS,
   CALM_SECONDS,
   CELL,
   COLS,
+  COMBO_MAX,
+  COMBO_WINDOW,
   GRID_Y,
   PLAYER,
   ROWS,
   SCORE,
-  STATION_BURN_LIMIT,
   UPGRADE_SECONDS,
   WAVE_SECONDS,
   WAVES,
@@ -51,6 +53,17 @@ export function createWorld(random) {
     shake: 0,
     mods: defaultMods(),
     upgrades: [],
+    /** Boons the crew owns this run: { id, name, count }. Shown in the HUD. */
+    boons: [],
+    /** Chained douses: combo count, seconds left on the chain, best chain. */
+    combo: 0,
+    comboTimer: 0,
+    comboBest: 0,
+    /** The wave-7 boss, or null before wave 7. */
+    boss: null,
+    bossDefeated: false,
+    /** Flames doused, by kind: { imp, crown, spot }. */
+    variantDoused: { imp: 0, crown: 0, spot: 0 },
     overReason: '',
     won: false,
     forest: null,
@@ -68,11 +81,88 @@ export function createWorld(random) {
     state.wave = n;
     state.waveTime = 0;
     state.wind = rollWind(random, n);
-    const lit = igniteEdge(state.forest, state.wind, 1 + n, random);
+    // Later waves bring new kinds of flame: Crown Fire from wave 3, fast
+    // Ember Imps from wave 5. Wave 7 brings the Crownfire itself.
+    const variant = n >= 5 ? 'imp' : n >= 3 ? 'crown' : 'spot';
+    const lit = igniteEdge(state.forest, state.wind, 1 + n, random, variant);
     state.banner = `WAVE ${n} OF ${WAVES} — WIND ${state.wind.name}${' ▮'.repeat(state.wind.strength)}`;
     state.bannerTime = 2.6;
     state.phase = 'wave';
+    if (n === WAVES) spawnBoss();
     return lit;
+  }
+
+  /** Wave 7: the Crownfire walks in from the edge the wind blows from. */
+  function spawnBoss() {
+    let col = 0;
+    let row = Math.floor(ROWS / 2);
+    if (state.wind.dy < 0) {
+      col = Math.floor(random() * COLS);
+      row = ROWS - 1;
+    } else if (state.wind.dy > 0) {
+      col = Math.floor(random() * COLS);
+      row = 0;
+    } else if (state.wind.dx < 0) {
+      col = COLS - 1;
+      row = Math.floor(random() * ROWS);
+    } else {
+      col = 0;
+      row = Math.floor(random() * ROWS);
+    }
+    state.boss = {
+      name: BOSS.name,
+      hp: BOSS.hp,
+      maxHp: BOSS.hp,
+      x: col * CELL + CELL / 2,
+      y: GRID_Y + row * CELL + CELL / 2,
+      phase: 1,
+      igniteTimer: 0,
+    };
+    state.banner = `WAVE 7 — ${BOSS.name.toUpperCase()} HAS COME`;
+    state.bannerTime = 3.2;
+  }
+
+  /** The boss walks toward the station and sets the forest alight around it. */
+  function stepBoss(dt) {
+    const boss = state.boss;
+    if (!boss) return;
+    const nextPhase = boss.hp > 200 ? 1 : boss.hp > 100 ? 2 : 3;
+    if (nextPhase !== boss.phase) {
+      boss.phase = nextPhase;
+      state.banner =
+        nextPhase === 2
+          ? `${BOSS.name.toUpperCase()} RAGES — IT BURNS FASTER`
+          : `${BOSS.name.toUpperCase()} IS ENRAGED — HOLD THE LINE`;
+      state.bannerTime = 2.6;
+    }
+    const speed = boss.phase === 3 ? BOSS.speedPhase3 : boss.phase === 2 ? BOSS.speedPhase2 : BOSS.speed;
+    const targetX = 19.5 * CELL;
+    const targetY = GRID_Y + 9.5 * CELL;
+    const dx = targetX - boss.x;
+    const dy = targetY - boss.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 80) {
+      boss.x += (dx / dist) * speed * dt;
+      boss.y += (dy / dist) * speed * dt;
+    }
+    boss.igniteTimer -= dt;
+    const interval = boss.phase === 3 ? 0.35 : 0.6;
+    if (boss.igniteTimer <= 0) {
+      boss.igniteTimer = interval;
+      const bcol = Math.floor(boss.x / CELL);
+      const brow = Math.floor((boss.y - GRID_Y) / CELL);
+      const radius = boss.phase === 3 ? 2 : 1;
+      for (let tries = 0; tries < 4; tries += 1) {
+        const col = bcol + Math.floor(random() * (radius * 2 + 1)) - radius;
+        const row = brow + Math.floor(random() * (radius * 2 + 1)) - radius;
+        const cell = state.forest.at(col, row);
+        if (cell && state.forest.flammable(cell) && !cell.fireproof && cell.wet <= 0) {
+          cell.fire = 5;
+          cell.variant = 'crown';
+          break;
+        }
+      }
+    }
   }
 
   function endGame(reason, won) {
@@ -83,6 +173,7 @@ export function createWorld(random) {
     // its fires put out, nothing more.
     state.treesBonus = won ? state.forest.treesAlive() * SCORE.tree : 0;
     state.score += state.treesBonus;
+    if (won && state.bossDefeated) state.score += SCORE.boss;
   }
 
   function stepFireAndStation(dt) {
@@ -97,7 +188,7 @@ export function createWorld(random) {
     if (stationBurning) {
       state.stationBurn += dt;
       state.shake = Math.max(state.shake, 6);
-      if (state.stationBurn >= STATION_BURN_LIMIT) {
+      if (state.stationBurn >= state.mods.stationBurnLimit) {
         endGame('The ranger station burned down.', false);
         return EVENT_OVER;
       }
@@ -121,15 +212,36 @@ export function createWorld(random) {
       }
     }
     if (input.water) {
-      const out = splashAt(player, state.forest, state.water, state.mods, input.waterTarget || null);
+      const out = splashAt(player, state.forest, state.water, state.mods, input.waterTarget || null, state.variantDoused);
       if (out >= 0) {
         state.water -= PLAYER.splashCost;
         state.extinguished += out;
-        state.score += out * SCORE.extinguish;
         const cx = input.waterTarget ? input.waterTarget.col : Math.floor(player.x / CELL);
         const cy = input.waterTarget ? input.waterTarget.row : Math.floor((player.y - GRID_Y) / CELL);
         state.particles.splash(cx * CELL + CELL / 2, GRID_Y + cy * CELL + CELL / 2);
-        if (out > 0) floater(cx * CELL + CELL / 2, GRID_Y + cy * CELL, `+${out * SCORE.extinguish}`, '#7ec8f2');
+        if (out > 0) {
+          // Chained douses raise the multiplier: each douse within the window
+          // pays more than the last, up to x8.
+          state.combo += 1;
+          state.comboTimer = COMBO_WINDOW;
+          const mult = Math.min(state.combo, COMBO_MAX);
+          if (mult > state.comboBest) state.comboBest = mult;
+          const gain = out * SCORE.extinguish * mult;
+          state.score += gain;
+          floater(cx * CELL + CELL / 2, GRID_Y + cy * CELL, `+${gain} x${mult}`, '#7ec8f2');
+        }
+        // A splash landing close to the Crownfire wounds it.
+        const boss = state.boss;
+        if (boss) {
+          const bcol = Math.floor(boss.x / CELL);
+          const brow = Math.floor((boss.y - GRID_Y) / CELL);
+          const reach = state.mods.splashRadius + BOSS.hitReach;
+          if (Math.abs(cx - bcol) <= reach && Math.abs(cy - brow) <= reach) {
+            boss.hp = Math.max(0, boss.hp - BOSS.splashDamage);
+            floater(boss.x, boss.y - 30, `-${BOSS.splashDamage} ${BOSS.name.toUpperCase()}`, '#ff9a3d');
+            state.particles.splash(boss.x, boss.y);
+          }
+        }
         events |= EVENT_SPLASH;
       } else {
         events |= EVENT_DENIED;
@@ -180,6 +292,13 @@ export function createWorld(random) {
       state.shake = 0;
       state.mods = defaultMods();
       state.upgrades = [];
+      state.boons = [];
+      state.combo = 0;
+      state.comboTimer = 0;
+      state.comboBest = 0;
+      state.boss = null;
+      state.bossDefeated = false;
+      state.variantDoused = { imp: 0, crown: 0, spot: 0 };
       state.overReason = '';
       state.won = false;
       state.floaters = [];
@@ -205,9 +324,31 @@ export function createWorld(random) {
       const upgrade = state.upgrades[index];
       if (!upgrade) return false;
       upgrade.apply(state.mods, this);
+      const owned = state.boons.find((b) => b.id === upgrade.id);
+      if (owned) owned.count += 1;
+      else state.boons.push({ id: upgrade.id, name: upgrade.name, count: 1 });
       state.upgrades = [];
       startWave(state.wave + 1);
       return true;
+    },
+
+    /** The Rain Call boon: a downpour douses every flame burning right now. */
+    rainCall() {
+      let out = 0;
+      for (const cell of state.forest.cells) {
+        if (cell.fire > 0) {
+          if (cell.variant) state.variantDoused[cell.variant] = (state.variantDoused[cell.variant] || 0) + 1;
+          cell.fire = 0;
+          cell.variant = null;
+          out += 1;
+        }
+        cell.wet = Math.max(cell.wet, 25);
+      }
+      state.extinguished += out;
+      state.score += out * SCORE.extinguish;
+      state.banner = 'RAIN CALL — EVERY FLAME DOUSED';
+      state.bannerTime = 2.6;
+      return out;
     },
 
     /** Mark random living trees fireproof, for the saplings upgrade. */
@@ -273,18 +414,42 @@ export function createWorld(random) {
       const fireEvents = stepFireAndStation(dt);
       events |= fireEvents;
       if (events & EVENT_OVER) return events;
+      // A chain breaks when the window runs out without another douse.
+      if (state.comboTimer > 0) {
+        state.comboTimer -= dt;
+        if (state.comboTimer <= 0) state.combo = 0;
+      }
+      stepBoss(dt);
       emitFireParticles();
+      // Dousing the Crownfire wins the game on the spot, boss bonus included.
+      if (state.boss && state.boss.hp <= 0) {
+        state.bossDefeated = true;
+        state.boss = null;
+        endGame('The Crownfire is doused. The forest stands.', true);
+        events |= EVENT_WIN | EVENT_OVER;
+        return events;
+      }
 
       if (state.phase === 'wave') {
         state.waveTime += dt;
         if (state.waveTime >= WAVE_SECONDS) {
-          state.phase = 'calm';
-          state.calmTime = 0;
-          state.score += SCORE.wave;
-          state.banner = `WAVE ${state.wave} CLEAR — MOP UP, THEN REST`;
-          state.bannerTime = 2.6;
-          events |= EVENT_WAVE_CLEAR;
+          if (state.wave >= WAVES) {
+            // Wave 7's timer is up but the boss lives: the fight goes on
+            // until the Crownfire is doused or the station burns.
+            state.phase = 'boss';
+            state.banner = 'THE CROWNFIRE REMAINS — FINISH IT';
+            state.bannerTime = 3;
+          } else {
+            state.phase = 'calm';
+            state.calmTime = 0;
+            state.score += SCORE.wave;
+            state.banner = `WAVE ${state.wave} CLEAR — MOP UP, THEN REST`;
+            state.bannerTime = 2.6;
+            events |= EVENT_WAVE_CLEAR;
+          }
         }
+      } else if (state.phase === 'boss') {
+        // No timer here: the boss fight ends only in victory or defeat.
       } else if (state.phase === 'calm') {
         state.calmTime += dt;
         if (state.calmTime >= CALM_SECONDS) {

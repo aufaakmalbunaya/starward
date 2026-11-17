@@ -48,6 +48,8 @@ export function createForest(random) {
         burnt: false,
         /** Seconds of fire left; 0 means not burning. */
         fire: 0,
+        /** Which kind of flame burns here: 'imp', 'crown', 'spot', or null. */
+        variant: null,
         /** Seconds of wetness left; wet ground resists ignition. */
         wet: 0,
         fireproof: false,

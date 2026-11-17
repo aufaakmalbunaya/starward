@@ -94,9 +94,10 @@ export function digStep(player, forest, digTime, dt) {
 /**
  * Drop water on a cell: fires in the radius go out and the ground stays wet. The
  * target is the clicked cell when one is in reach, else the player's own cell.
- * Returns how many fires went out, or -1 when the tank cannot pay.
+ * Returns how many fires went out, or -1 when the tank cannot pay. When `counts`
+ * is given, each kind of flame doused is tallied into it.
  */
-export function splashAt(player, forest, tank, mods, target) {
+export function splashAt(player, forest, tank, mods, target, counts = null) {
   if (tank < PLAYER.splashCost) return -1;
   let col;
   let row;
@@ -110,7 +111,7 @@ export function splashAt(player, forest, tank, mods, target) {
     col = Math.floor(player.x / CELL);
     row = Math.floor((player.y - GRID_Y) / CELL);
   }
-  return douse(forest, col, row, mods.splashRadius, mods.wetSeconds);
+  return douse(forest, col, row, mods.splashRadius, mods.wetSeconds, counts);
 }
 
 /** Refill the tank while standing beside the pond; the spring upgrade adds a trickle. */

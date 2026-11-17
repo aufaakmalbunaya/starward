@@ -216,7 +216,7 @@ function runGame() {
     else if (events & EVENT_UPGRADE) {
       screen = SCREEN_UPGRADE;
       sfx.upgrade();
-      announce('Wave clear. Choose an upgrade, then face the next wave.');
+      announce('Wave clear. Choose a boon, then face the next wave.');
     }
   }
 

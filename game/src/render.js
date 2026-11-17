@@ -153,30 +153,39 @@ export function createRenderer(canvas) {
         if (cell.fire <= 0) continue;
         const x = col * CELL + CELL / 2;
         const y = GRID_Y + row * CELL + CELL / 2;
-        const flick = Math.sin(time * 9 + col * 1.7 + row * 2.3) * 3 + Math.sin(time * 17 + col * 3.1) * 2;
+        // Each kind of flame looks different: Ember Imps burn small and
+        // white-hot, Crown Fire burns tall and deep red, Spot Fire is the
+        // usual orange tongue.
+        const variant = cell.variant || 'spot';
+        const fast = variant === 'imp' ? 14 : 9;
+        const big = variant === 'crown' ? 1.25 : variant === 'imp' ? 0.75 : 1;
+        const edge = variant === 'imp' ? PALETTE.impEdge : variant === 'crown' ? PALETTE.crownEdge : PALETTE.fireEdge;
+        const mid = variant === 'imp' ? PALETTE.impCore : variant === 'crown' ? PALETTE.crownMid : PALETTE.fireMid;
+        const core = variant === 'imp' ? '#ffffff' : PALETTE.fireCore;
+        const flick = Math.sin(time * fast + col * 1.7 + row * 2.3) * 3 + Math.sin(time * 17 + col * 3.1) * 2;
         ctx.fillStyle = 'rgba(255, 122, 26, 0.20)';
         ctx.beginPath();
-        ctx.arc(x, y, 24, 0, Math.PI * 2);
+        ctx.arc(x, y, 24 * big, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = PALETTE.fireEdge;
+        ctx.fillStyle = edge;
         ctx.beginPath();
-        ctx.moveTo(x - 11, y + 10);
-        ctx.lineTo(x - 4 + flick * 0.4, y - 12 - flick);
-        ctx.lineTo(x + 2, y + 2);
-        ctx.lineTo(x + 8 + flick * 0.3, y - 8 - flick * 0.6);
-        ctx.lineTo(x + 11, y + 10);
+        ctx.moveTo(x - 11 * big, y + 10 * big);
+        ctx.lineTo(x - 4 * big + flick * 0.4, y - 12 * big - flick);
+        ctx.lineTo(x + 2 * big, y + 2 * big);
+        ctx.lineTo(x + 8 * big + flick * 0.3, y - 8 * big - flick * 0.6);
+        ctx.lineTo(x + 11 * big, y + 10 * big);
         ctx.closePath();
         ctx.fill();
-        ctx.fillStyle = PALETTE.fireMid;
+        ctx.fillStyle = mid;
         ctx.beginPath();
-        ctx.moveTo(x - 7, y + 10);
-        ctx.lineTo(x - 2 + flick * 0.3, y - 6 - flick * 0.7);
-        ctx.lineTo(x + 6, y + 10);
+        ctx.moveTo(x - 7 * big, y + 10 * big);
+        ctx.lineTo(x - 2 * big + flick * 0.3, y - 6 * big - flick * 0.7);
+        ctx.lineTo(x + 6 * big, y + 10 * big);
         ctx.closePath();
         ctx.fill();
-        ctx.fillStyle = PALETTE.fireCore;
+        ctx.fillStyle = core;
         ctx.beginPath();
-        ctx.arc(x, y + 5, 3.5, 0, Math.PI * 2);
+        ctx.arc(x, y + 5 * big, 3.5 * big, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -208,6 +217,45 @@ export function createRenderer(canvas) {
     ctx.fillStyle = '#3a2a1a';
     ctx.fillRect(x + 28, y + 40, 8, 20);
     text('RANGER', x + 32, y + 16, 9, PALETTE.text, 'center', 700);
+  }
+
+  function drawBoss(state) {
+    const boss = state.boss;
+    if (!boss) return;
+    const flick = Math.sin(state.time * 11) * 4 + Math.sin(state.time * 23) * 2;
+    const size = 30 + boss.phase * 4;
+    ctx.fillStyle = 'rgba(255, 77, 0, 0.25)';
+    ctx.beginPath();
+    ctx.arc(boss.x, boss.y, size + 26, 0, Math.PI * 2);
+    ctx.fill();
+    // A towering flame with a burning crown and two ember eyes.
+    ctx.fillStyle = PALETTE.crownEdge;
+    ctx.beginPath();
+    ctx.moveTo(boss.x - size, boss.y + size * 0.7);
+    ctx.lineTo(boss.x - size * 0.4 + flick * 0.3, boss.y - size - flick);
+    ctx.lineTo(boss.x, boss.y - size * 0.4);
+    ctx.lineTo(boss.x + size * 0.4 + flick * 0.3, boss.y - size - flick * 0.7);
+    ctx.lineTo(boss.x + size, boss.y + size * 0.7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = PALETTE.crownMid;
+    ctx.beginPath();
+    ctx.moveTo(boss.x - size * 0.6, boss.y + size * 0.7);
+    ctx.lineTo(boss.x - size * 0.2, boss.y - size * 0.5 - flick * 0.5);
+    ctx.lineTo(boss.x + size * 0.5, boss.y + size * 0.7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = PALETTE.fireCore;
+    ctx.beginPath();
+    ctx.arc(boss.x, boss.y + size * 0.3, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff6c9';
+    ctx.beginPath();
+    ctx.arc(boss.x - 9, boss.y - size * 0.15, 3, 0, Math.PI * 2);
+    ctx.arc(boss.x + 9, boss.y - size * 0.15, 3, 0, Math.PI * 2);
+    ctx.fill();
+    const phaseName = boss.phase === 3 ? 'ENRAGED' : boss.phase === 2 ? 'RAGING' : 'STALKING';
+    text(`${boss.name.toUpperCase()} · ${phaseName}`, boss.x, boss.y - size - 14, 13, PALETTE.gold, 'center', 800);
   }
 
   function drawPlayer(state) {
@@ -321,11 +369,37 @@ export function createRenderer(canvas) {
     // Score.
     text('SCORE', 960, 22, 11, PALETTE.muted, 'left', 700);
     text(String(state.score), 960, 42, 17, PALETTE.text, 'left', 800);
+    // Combo multiplier: chained douses within a few seconds pay more.
+    const mult = Math.max(1, Math.min(state.combo || 0, 8));
+    if (mult > 1) {
+      text(`x${mult}`, 1055, 44, 22, PALETTE.gold, 'left', 800);
+      text('COMBO', 1055, 22, 11, PALETTE.gold, 'left', 700);
+    }
     text(`BEST ${best}`, 1120, 42, 13, PALETTE.muted, 'left', 600);
     // Station burning alarm.
     if (state.stationBurn > 0) {
       const blink = Math.sin(state.time * 10) > 0;
       text('STATION BURNING — DOUSE IT!', FIELD.width / 2, 96, 20, blink ? PALETTE.danger : '#ffb3a0', 'center', 800);
+    }
+    // Boss health bar, while the Crownfire lives.
+    if (state.boss) {
+      const bw = 460;
+      const bx = (FIELD.width - bw) / 2;
+      const by = 70;
+      ctx.fillStyle = 'rgba(10, 20, 13, 0.88)';
+      roundRect(ctx, bx, by, bw, 20, 8);
+      ctx.fill();
+      ctx.strokeStyle = PALETTE.bossBar;
+      ctx.lineWidth = 1.5;
+      roundRect(ctx, bx, by, bw, 20, 8);
+      ctx.stroke();
+      const frac = Math.max(0, state.boss.hp / state.boss.maxHp);
+      ctx.fillStyle = PALETTE.bossBar;
+      if (frac > 0) {
+        roundRect(ctx, bx + 2, by + 2, Math.max(6, (bw - 4) * frac), 16, 6);
+        ctx.fill();
+      }
+      text(`${state.boss.name.toUpperCase()}  ${Math.ceil(state.boss.hp)}/${state.boss.maxHp}`, FIELD.width / 2, by + 15, 12, PALETTE.text, 'center', 800);
     }
     // Wave banner.
     if (state.bannerTime > 0) {
@@ -357,14 +431,19 @@ export function createRenderer(canvas) {
   function statsLines(state) {
     const alive = state.forest.treesAlive();
     const total = Math.max(1, state.treesStart);
-    return [
+    const lines = [
       `Waves held: ${state.won ? WAVES : Math.max(0, state.wave - 1)} of ${WAVES}`,
       `Fires put out: ${state.extinguished}`,
       `Firebreaks dug: ${state.dug}`,
+      `Ember Imps doused: ${state.variantDoused.imp}  ·  Crown Fire: ${state.variantDoused.crown}  ·  Spot Fires: ${state.variantDoused.spot}`,
+      `Best combo: x${Math.max(1, state.comboBest || 0)}`,
       `Trees still standing: ${alive} of ${total} (${Math.round((alive / total) * 100)}%)`,
       `Trees saved bonus: +${state.treesBonus}`,
-      `Score: ${state.score}`,
     ];
+    if (state.bossDefeated) lines.push('The Crownfire: doused (+500)');
+    else if (state.wave >= WAVES) lines.push('The Crownfire: still burning');
+    lines.push(`Score: ${state.score}`);
+    return lines;
   }
 
   function drawTitle(state, best) {
@@ -375,26 +454,29 @@ export function createRenderer(canvas) {
     const pw = 620;
     const px = (FIELD.width - pw) / 2;
     ctx.fillStyle = 'rgba(20, 38, 27, 0.92)';
-    roundRect(ctx, px, 300, pw, 132, 12);
+    roundRect(ctx, px, 300, pw, 142, 12);
     ctx.fill();
     ctx.strokeStyle = PALETTE.panelLine;
     ctx.lineWidth = 1.5;
-    roundRect(ctx, px, 300, pw, 132, 12);
+    roundRect(ctx, px, 300, pw, 142, 12);
     ctx.stroke();
     text('HOW TO PLAY', px + 24, 330, 13, PALETTE.gold, 'left', 800);
     text('WASD or arrows — run through the forest', px + 24, 358, 16, PALETTE.text, 'left', 600);
     text('Hold SPACE — dig a firebreak under your feet', px + 24, 382, 16, PALETTE.text, 'left', 600);
     text('K or click — splash water where the fire is', px + 24, 406, 16, PALETTE.text, 'left', 600);
     text('Stand by the pond to refill — and mind which way the wind blows', px + 24, 430, 16, PALETTE.text, 'left', 600);
-    if (best > 0) text(`BEST SCORE ${best}`, FIELD.width / 2, 470, 16, PALETTE.muted, 'center', 700);
+    text('KNOW YOUR FIRE', FIELD.width / 2, 470, 13, PALETTE.gold, 'center', 800);
+    text('Ember Imp — fast, burns out quick  ·  Crown Fire — spreads fast  ·  Spot Fire — embers jump ahead', FIELD.width / 2, 492, 14, PALETTE.muted, 'center', 600);
+    text('WIN: survive 7 waves and douse the Crownfire  ·  LOSE: the ranger station burns down', FIELD.width / 2, 516, 14, PALETTE.text, 'center', 700);
+    if (best > 0) text(`BEST SCORE ${best}`, FIELD.width / 2, 544, 16, PALETTE.muted, 'center', 700);
     const blink = Math.sin(state.time * 4) > -0.2;
-    if (blink) text('PRESS SPACE OR CLICK TO START', FIELD.width / 2, 520, 20, PALETTE.text, 'center', 800);
+    if (blink) text('PRESS SPACE OR CLICK TO START', FIELD.width / 2, 580, 20, PALETTE.text, 'center', 800);
   }
 
   function drawUpgrade(state, ui) {
     overlay(0.72);
-    text(`WAVE ${state.wave} CLEAR — CHOOSE ONE`, FIELD.width / 2, 200, 30, PALETTE.gold, 'center', 800);
-    text('The fire is out for now. Pick an upgrade, then face the next wave.', FIELD.width / 2, 232, 17, PALETTE.text, 'center', 600);
+    text(`WAVE ${state.wave} CLEAR — CHOOSE A BOON`, FIELD.width / 2, 200, 30, PALETTE.gold, 'center', 800);
+    text('The fire is out for now. Pick one boon — it stays with you for the rest of the run.', FIELD.width / 2, 232, 17, PALETTE.text, 'center', 600);
     const choices = ui.upgrades || [];
     choices.forEach((choice, i) => {
       const r = upgradeCardRect(i);
@@ -430,6 +512,10 @@ export function createRenderer(canvas) {
     text('Press 1, 2 or 3 — or click a card', FIELD.width / 2, 520, 16, PALETTE.muted, 'center', 600);
     const left = Math.max(0, Math.ceil(UPGRADE_SECONDS - (state.upgradeTime || 0)));
     text(`Or wait — the first card is taken in ${left}s`, FIELD.width / 2, 546, 14, PALETTE.muted, 'center', 600);
+    if (state.boons && state.boons.length > 0) {
+      const names = state.boons.map((b) => (b.count > 1 ? `${b.name} x${b.count}` : b.name)).join('  ·  ');
+      text(`BOONS OWNED: ${names}`, FIELD.width / 2, 574, 14, PALETTE.gold, 'center', 700);
+    }
   }
 
   function drawPaused() {
@@ -444,7 +530,7 @@ export function createRenderer(canvas) {
     text(state.overReason, FIELD.width / 2, 238, 19, PALETTE.text, 'center', 600);
     const lines = statsLines(state);
     lines.forEach((line, i) => {
-      text(line, FIELD.width / 2, 296 + i * 30, 18, i === lines.length - 1 ? PALETTE.gold : PALETTE.text, 'center', i === lines.length - 1 ? 800 : 600);
+      text(line, FIELD.width / 2, 286 + i * 26, 17, i === lines.length - 1 ? PALETTE.gold : PALETTE.text, 'center', i === lines.length - 1 ? 800 : 600);
     });
     const blink = Math.sin(state.time * 4) > -0.2;
     if (blink) text('PRESS SPACE OR CLICK TO PLAY AGAIN', FIELD.width / 2, 520, 20, PALETTE.text, 'center', 800);
@@ -465,6 +551,7 @@ export function createRenderer(canvas) {
       drawStation(state);
       drawPlayer(state);
       drawFire(state);
+      drawBoss(state);
       state.particles.draw(ctx);
       for (const f of state.floaters) {
         ctx.globalAlpha = Math.max(0, f.life);
@@ -472,6 +559,13 @@ export function createRenderer(canvas) {
         ctx.globalAlpha = 1;
       }
       drawHud(state, best);
+      // Owned boons, as a strip above the hint line.
+      if (state.boons && state.boons.length > 0 && (screen === SCREEN_PLAY || screen === SCREEN_UPGRADE)) {
+        const names = state.boons.map((b) => (b.count > 1 ? `${b.name} x${b.count}` : b.name)).join('  ·  ');
+        ctx.fillStyle = PALETTE.hud;
+        ctx.fillRect(0, FIELD.height - 38, FIELD.width, 20);
+        text(`BOONS: ${names}`, 16, FIELD.height - 24, 12, PALETTE.gold, 'left', 700);
+      }
       if (screen === SCREEN_TITLE) {
         drawTitle(state, best);
         drawHint('SPACE or click to start  ·  M mute');
@@ -488,7 +582,7 @@ export function createRenderer(canvas) {
         drawEnd(state, true);
         drawHint('SPACE or click to play again');
       } else {
-        drawHint('WASD move  ·  hold SPACE dig  ·  K or click splash water  ·  P pause  ·  M mute');
+        drawHint('WASD move  ·  hold SPACE dig  ·  K or click splash water  ·  P pause  ·  M mute  ·  WIN: douse the Crownfire  ·  LOSE: station burns');
       }
       ctx.setTransform(1, 0, 0, 1, 0, 0);
     },
